@@ -2,12 +2,24 @@ const Document = require('../models/Document');
 
 // Simple in-memory debounce map (for demo; use Redis for production)
 const debounceTimers = {};
+// Track user count per document room
+const documentUsers = {};
 
 module.exports = function(io) {
   io.on('connection', (socket) => {
     // Join a document room
     socket.on('join-document', (docId) => {
       socket.join(docId);
+      
+      // Track user count
+      if (!documentUsers[docId]) {
+        documentUsers[docId] = new Set();
+      }
+      documentUsers[docId].add(socket.id);
+      
+      // Emit updated count to all users in the room
+      const userCount = documentUsers[docId].size;
+      io.to(docId).emit('user-joined', userCount);
     });
 
     // Handle edits
@@ -48,6 +60,21 @@ module.exports = function(io) {
       }, 500); // 500ms debounce
     });
 
-    // Optionally handle disconnects, etc.
+    // Handle disconnection
+    socket.on('disconnect', () => {
+      // Remove user from all document rooms they were in
+      Object.keys(documentUsers).forEach(docId => {
+        if (documentUsers[docId].has(socket.id)) {
+          documentUsers[docId].delete(socket.id);
+          const userCount = documentUsers[docId].size;
+          io.to(docId).emit('user-left', userCount);
+          
+          // Clean up empty rooms
+          if (documentUsers[docId].size === 0) {
+            delete documentUsers[docId];
+          }
+        }
+      });
+    });
   });
 };
