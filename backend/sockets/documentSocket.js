@@ -2,8 +2,10 @@ const Document = require('../models/Document');
 
 // Simple in-memory debounce map (for demo; use Redis for production)
 const debounceTimers = {};
-// Track user count per document room
+// Track user count per document room (by userId, not socketId)
 const documentUsers = {};
+// Track socket to user mapping
+const socketToUser = {};
 
 module.exports = function(io) {
   io.on('connection', (socket) => {
@@ -11,15 +13,31 @@ module.exports = function(io) {
     socket.on('join-document', (docId) => {
       socket.join(docId);
       
-      // Track user count
-      if (!documentUsers[docId]) {
-        documentUsers[docId] = new Set();
+      // Get user ID from JWT token
+      let userId = null;
+      if (socket.handshake.auth && socket.handshake.auth.token) {
+        try {
+          const jwt = require('jsonwebtoken');
+          const decoded = jwt.verify(socket.handshake.auth.token, process.env.JWT_SECRET);
+          userId = decoded.userId;
+        } catch (err) {
+          console.error('Invalid JWT token:', err);
+        }
       }
-      documentUsers[docId].add(socket.id);
       
-      // Emit updated count to all users in the room
-      const userCount = documentUsers[docId].size;
-      io.to(docId).emit('user-joined', userCount);
+      if (userId) {
+        // Track user count by userId
+        if (!documentUsers[docId]) {
+          documentUsers[docId] = new Set();
+        }
+        documentUsers[docId].add(userId);
+        socketToUser[socket.id] = { userId, docId };
+        
+        // Emit updated count to all users in the room
+        const userCount = documentUsers[docId].size;
+        console.log(`User ${userId} joined document ${docId}, total users: ${userCount}`);
+        io.to(docId).emit('user-joined', userCount);
+      }
     });
 
     // Handle edits
@@ -60,13 +78,39 @@ module.exports = function(io) {
       }, 500); // 500ms debounce
     });
 
+    // Handle comment events
+    socket.on('comment-added', ({ docId, comment }) => {
+      socket.to(docId).emit('comment-added', comment);
+    });
+
+    socket.on('comment-updated', ({ docId, comment }) => {
+      socket.to(docId).emit('comment-updated', comment);
+    });
+
+    socket.on('comment-deleted', ({ docId, commentId }) => {
+      socket.to(docId).emit('comment-deleted', commentId);
+    });
+
+    socket.on('comment-resolved', ({ docId, comment }) => {
+      socket.to(docId).emit('comment-resolved', comment);
+    });
+
     // Handle disconnection
     socket.on('disconnect', () => {
-      // Remove user from all document rooms they were in
-      Object.keys(documentUsers).forEach(docId => {
-        if (documentUsers[docId].has(socket.id)) {
-          documentUsers[docId].delete(socket.id);
+      const userInfo = socketToUser[socket.id];
+      if (userInfo) {
+        const { userId, docId } = userInfo;
+        
+        // Check if this user has other connections to the same document
+        const userConnections = Object.values(socketToUser).filter(
+          info => info.userId === userId && info.docId === docId
+        );
+        
+        // Only remove user if this was their last connection
+        if (userConnections.length === 1) {
+          documentUsers[docId].delete(userId);
           const userCount = documentUsers[docId].size;
+          console.log(`User ${userId} left document ${docId}, total users: ${userCount}`);
           io.to(docId).emit('user-left', userCount);
           
           // Clean up empty rooms
@@ -74,7 +118,10 @@ module.exports = function(io) {
             delete documentUsers[docId];
           }
         }
-      });
+        
+        // Remove socket mapping
+        delete socketToUser[socket.id];
+      }
     });
   });
 };

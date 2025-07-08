@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const { Server } = require('socket.io');
 const documentsRouter = require('./routes/documents');
 const authRouter = require('./routes/auth');
+const commentsRouter = require('./routes/comments');
 
 const app = express();
 const server = http.createServer(app);
@@ -31,6 +32,7 @@ mongoose.connect(process.env.MONGO_URI, {
 // Placeholder for routes
 app.use('/api/documents', documentsRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/comments', commentsRouter);
 
 // Placeholder for Socket.IO logic
 require('./sockets/documentSocket')(io);
